@@ -1,0 +1,303 @@
+[ Source Code ]
+-– Camera ESP32 —
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Wire.h> // For I2C/SCCB
+
+#define WIFI_SSID "tp_link ni domdom"
+#define WIFI_PASS "@Cutenidomdom02"
+
+#define SERVER_URL "http://192.168.68.108/SAMPAYAN/upload.php"
+
+// Camera I2C address (SCCB)
+#define OV7670_ADDR 0x21 // 0x42 >> 1 (7-bit address)
+
+// Camera control pins
+#define RESET_GPIO 16
+#define VSYNC_GPIO 15
+#define HREF_GPIO 18
+#define PCLK_GPIO 19
+
+// Data pins D0–D7
+int d_pins[8] = {32, 33, 25, 26, 27, 14, 5, 13};
+
+void writeCameraRegister(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(OV7670_ADDR);
+  Wire.write(reg);
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+void initCamera() {
+  Serial.println("Initializing OV7670...");
+  delay(100);
+
+  writeCameraRegister(0x12, 0x80); // Reset
+  delay(100);
+
+  writeCameraRegister(0x12, 0x24); // QVGA RGB
+  writeCameraRegister(0x11, 0x01); // Clock prescaler
+  writeCameraRegister(0x0C, 0x00); // No mirror
+  writeCameraRegister(0x3E, 0x00); // PCLK does not toggle on HBLANK
+  writeCameraRegister(0x8C, 0x02); // RGB565
+
+  Serial.println("Camera initialized.");
+}
+
+void resetCamera() {
+  pinMode(RESET_GPIO, OUTPUT);
+  digitalWrite(RESET_GPIO, HIGH);
+}
+
+void connectWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+uint8_t readByteFromCamera() {
+  uint8_t byte = 0;
+  for (int i = 0; i < 8; i++) {
+    byte |= (digitalRead(d_pins[i]) << i);
+  }
+  return byte;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Wire.begin(21, 22); // SDA, SCL
+  initCamera();
+
+  for (int i = 0; i < 8; i++) {
+    pinMode(d_pins[i], INPUT);
+  }
+  pinMode(VSYNC_GPIO, INPUT);
+  pinMode(HREF_GPIO, INPUT);
+  pinMode(PCLK_GPIO, INPUT);
+
+  resetCamera();
+  connectWiFi();
+}
+
+void loop() {
+  
+Serial.println("Waiting for VSYNC...");
+  while (digitalRead(VSYNC_GPIO) == HIGH);
+  while (digitalRead(VSYNC_GPIO) == LOW);
+
+  Serial.println("Capturing frame...");
+
+  const int frameSize = 160 * 120 * 2;
+  uint8_t* frame = (uint8_t*) malloc(frameSize);
+  if (!frame) {
+    Serial.println("Memory allocation failed!");
+    delay(5000);
+    return;
+  }
+
+  int index = 0;
+  while (digitalRead(VSYNC_GPIO) == HIGH && index < frameSize) {
+    if (digitalRead(HREF_GPIO) == HIGH) {
+      while (digitalRead(HREF_GPIO) == HIGH) {
+        while (digitalRead(PCLK_GPIO) == LOW);
+        uint8_t highByte = readByteFromCamera();
+        while (digitalRead(PCLK_GPIO) == HIGH);
+
+        while (digitalRead(PCLK_GPIO) == LOW);
+        uint8_t lowByte = readByteFromCamera();
+        while (digitalRead(PCLK_GPIO) == HIGH);
+
+        if (index + 1 < frameSize) {
+          frame[index++] = highByte;
+          frame[index++] = lowByte;
+        }
+      
+}
+    }
+  }
+
+  Serial.println("Uploading image...");
+
+  HTTPClient http;
+  http.begin(SERVER_URL);
+  http.addHeader("Content-Type", "application/octet-stream");
+
+  int response = http.POST(frame, frameSize);
+  if (response > 0) {
+    Serial.printf("✅ Upload success. Code: %d\n", response);
+    String body = http.getString();
+    Serial.println("Server Response: " + body);
+  } else {
+    Serial.printf("❌ Upload failed. Code: %d\n", response);
+  }
+
+  http.end();
+  free(frame);
+  delay(10000);
+}
+
+— Speed of Servo —
+#define BLYNK_TEMPLATE_ID "TMPL6moe-qoC1"
+#define BLYNK_TEMPLATE_NAME "SAMPAYAN"
+#define BLYNK_AUTH_TOKEN "L25vYC1vKxsepuvArx4VBqFVOX9-3YFd"
+
+#include <ESP8266WiFi.h>
+
+#include <BlynkSimpleEsp8266.h>
+#include <Servo.h>
+
+// WiFi credentials
+char ssid[] = "tp_link ni domdom";      // Replace with your WiFi name
+char pass[] = "@Cutenidomdom02"; 
+
+// Pin Definitions
+#define RAIN_SENSOR_PIN D0  
+#define BUTTON_PIN D5       
+#define SERVO_PIN D8        
+
+Servo myServo;
+int controlState = 0;  // 0 = Retracted (inside), 1 = Outside (180°)
+
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 200;  
+int lastButtonState = HIGH;  
+
+// Servo speed control
+int retractSpeed = 15;  // Time in ms between degree changes (lower = faster)
+int extendSpeed = 5;    // Time in ms between degree changes when extending
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n[System] Initializing...");
+
+  WiFi.begin(ssid, pass);
+  Serial.print("[WiFi] Connecting");
+  while (WiFi.status() != WL_CONNECTED) { 
+      
+delay(500);
+      Serial.print(".");
+  }
+  Serial.println("\n[WiFi] Connected!");
+  Serial.print("[WiFi] IP Address: ");
+  Serial.println(WiFi.localIP());
+  
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  Serial.println("[Blynk] Connected.");
+
+  // Setup hardware
+  myServo.attach(SERVO_PIN);
+  myServo.write(0);  // 🛠️ Start at 0° (Retracted position)
+  delay(500);  // Give servo time to move
+
+  pinMode(RAIN_SENSOR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  controlState = 0; // System recognizes it as "Retracted"
+
+  // Sync Blynk app state on startup
+  Blynk.virtualWrite(V5, controlState);
+  Blynk.virtualWrite(V6, retractSpeed); // Send initial speed value to Blynk
+  Serial.println("[System] Ready. Servo set to 0°.");
+}
+
+void loop() {
+  checkWiFi();
+  Blynk.run(); 
+    
+  unsigned long currentTime = millis();
+    
+  handleButton(currentTime);
+  handleRainSensor();
+
+  delay(100);
+}
+
+// 🔹 *Function: Ensure WiFi stays connected*
+void checkWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[WiFi] Disconnected! Reconnecting...");
+      WiFi.begin(ssid, pass);
+  }
+}
+
+// 🔹 *Function: Handle button press (Debounced)*
+void handleButton(unsigned long currentTime) {
+  int buttonState = digitalRead(BUTTON_PIN);
+  if ((currentTime - lastDebounceTime) > debounceDelay) {
+      if (buttonState == LOW && lastButtonState == HIGH) { 
+          lastDebounceTime = currentTime;
+          controlState = !controlState;  
+          updateServo(controlState);
+          Blynk.virtualWrite(V5, controlState);
+          Serial.print("[Button] Pressed: Servo moved to ");
+          Serial.println(controlState == 0 ? "0° (Retracted)" : "180° (Outside)");
+          Blynk.syncVirtual(V5);
+      }
+      lastButtonState = buttonState;
+  
+}
+}
+
+// 🔹 *Function: Handle rain detection*
+void handleRainSensor() {
+  int rainDetected = digitalRead(RAIN_SENSOR_PIN);
+  if (rainDetected == LOW && controlState != 0) {  // If it's raining and not already retracted
+      controlState = 0;  // Retract clothesline (0°)
+      updateServo(controlState);
+      Blynk.virtualWrite(V5, controlState);
+      Serial.println("[Rain Sensor] Rain detected! Servo moved to 0° (Retracted).");
+  }
+  
+  // Send real-time status updates to Blynk
+  Blynk.virtualWrite(V2, controlState == 0 ? "Retracted" : "Outside");
+  Blynk.virtualWrite(V3, rainDetected == LOW ? "Raining" : "No Rain");
+}
+
+// 🔹 *Function: Update servo position with controlled speed*
+void updateServo(int state) {
+  int currentPos = myServo.read();
+  int targetPos = state == 0 ? 0 : 180;
+  int speed = state == 0 ? retractSpeed : extendSpeed;
+  
+  if (currentPos < targetPos) {
+      for (int pos = currentPos; pos <= targetPos; pos++) {
+          myServo.write(pos);
+          delay(speed);
+      }
+  } else {
+      
+for (int pos = currentPos; pos >= targetPos; pos--) {
+          myServo.write(pos);
+          delay(speed);
+      }
+  }
+}
+
+// 🔹 *Blynk Button Press Handling*
+BLYNK_WRITE(V5) {
+  int pinValue = param.asInt();
+  if (pinValue != controlState) {
+      controlState = pinValue;
+      updateServo(controlState);
+      Serial.print("[Blynk] Button Pressed: Servo moved to ");
+      Serial.println(controlState == 0 ? "0° (Retracted)" : "180° (Outside)");
+      Blynk.virtualWrite(V5, controlState);
+      Blynk.syncVirtual(V5);
+  }
+}
+
+// 🔹 *Blynk Retract Speed Control*
+BLYNK_WRITE(V6) {
+  retractSpeed = param.asInt();
+  Serial.print("[Blynk] Retract speed set to: ");
+  Serial.print(retractSpeed);
+  Serial.println("ms per degree");
+}
